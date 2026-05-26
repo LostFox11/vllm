@@ -789,9 +789,14 @@ class ParallelConfig:
             if self.distributed_executor_backend == "external_launcher":
                 # For external launcher,
                 # we need to set the data parallel rank automatically
-                self.data_parallel_rank = int(os.environ["RANK"]) // (
-                    self.world_size // self.data_parallel_size
-                )
+                # With cross-machine PP layout, DP varies after PP in the
+                # rank ordering (PP, DP, TP), so dp_rank is extracted as:
+                #   (RANK % (dp_size * tp_size)) // tp_size
+                # rather than the standard RANK // (world_size // dp_size).
+                rank_val = int(os.environ["RANK"])
+                self.data_parallel_rank = (rank_val % (
+                    self.data_parallel_size * self.tensor_parallel_size)
+                ) // self.tensor_parallel_size
                 logger.info(
                     "Set data_parallel_rank to %d automatically.",
                     self.data_parallel_rank,

@@ -114,11 +114,14 @@ class MultiprocExecutor(Executor):
         self.failure_callback: FailureCallback | None = None
 
         tp_size, pp_size, pcp_size = self._get_parallel_sizes()
-        assert self.world_size == tp_size * pp_size * pcp_size, (
-            f"world_size ({self.world_size}) must be equal to the "
-            f"tensor_parallel_size ({tp_size}) x pipeline"
-            f"_parallel_size ({pp_size}) x prefill_context"
-            f"_parallel_size ({pcp_size}). "
+        dp_size = self.parallel_config.data_parallel_size
+        expected_world = tp_size * pp_size * pcp_size
+        if self.parallel_config.nnodes > 1 and dp_size > 1:
+            expected_world *= dp_size
+        assert self.world_size == expected_world, (
+            f"world_size ({self.world_size}) must be equal to "
+            f"tp*pp*pcp{'*dp' if expected_world != tp_size * pp_size * pcp_size else ''} "
+            f"({expected_world}). "
         )
 
         set_multiprocessing_worker_envs()
@@ -246,13 +249,20 @@ class MultiprocExecutor(Executor):
         self.output_rank = self._get_output_rank()
 
     def _get_parallel_sizes(self) -> tuple[int, int, int]:
+        dp_size = self.parallel_config.data_parallel_size
+        nnodes = self.parallel_config.nnodes
         self.world_size = self.parallel_config.world_size
+        # For multi-node DP, expand world_size so the executor creates
+        # workers for all DP ranks in one coordinated group rather than
+        # treating each DP rank as an independent engine.
+        if nnodes > 1 and dp_size > 1:
+            self.world_size *= dp_size
         assert self.world_size % self.parallel_config.nnodes_within_dp == 0, (
             f"global world_size ({self.parallel_config.world_size}) must be "
             f"divisible by nnodes_within_dp "
             f"({self.parallel_config.nnodes_within_dp}). "
         )
-        self.local_world_size = self.parallel_config.local_world_size
+        self.local_world_size = self.world_size // self.parallel_config.nnodes_within_dp
         tp_size = self.parallel_config.tensor_parallel_size
         pp_size = self.parallel_config.pipeline_parallel_size
         pcp_size = self.parallel_config.prefill_context_parallel_size

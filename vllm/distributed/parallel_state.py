@@ -1584,10 +1584,14 @@ def initialize_model_parallel(
     # otherwise it will cause deadlock.
     # to get group_ranks for each dimension, transpose that dimension to the
     # last dimension, then reshape to 2D, then unbind the last dimension
+    # Cross-machine PP layout: PP dimension is moved before DP so that
+    # with consecutive rank assignment (e.g. torchrun), all PP=0 ranks
+    # are on the first node(s) and all PP=1 ranks on the next node(s),
+    # making pipeline parallel groups span across machines.
     all_ranks = torch.arange(world_size).reshape(
         -1,
-        data_parallel_size,
         pipeline_model_parallel_size,
+        data_parallel_size,
         prefill_context_model_parallel_size,
         tensor_model_parallel_size,
     )  # noqa
@@ -1654,7 +1658,7 @@ def initialize_model_parallel(
     global _PP
     assert _PP is None, "pipeline model parallel group is already initialized"
     group_ranks = (
-        all_ranks.transpose(2, 4).reshape(-1, pipeline_model_parallel_size).unbind(0)
+        all_ranks.transpose(1, 4).reshape(-1, pipeline_model_parallel_size).unbind(0)
     )
     group_ranks = [x.tolist() for x in group_ranks]
     if enable_elastic_ep:
@@ -1676,7 +1680,7 @@ def initialize_model_parallel(
 
     global _DP
     assert _DP is None, "data parallel group is already initialized"
-    group_ranks = all_ranks.transpose(1, 4).reshape(-1, data_parallel_size).unbind(0)
+    group_ranks = all_ranks.transpose(2, 4).reshape(-1, data_parallel_size).unbind(0)
     group_ranks = [x.tolist() for x in group_ranks]
     if enable_elastic_ep:
         _DP = _init_stateless_group(
@@ -1696,7 +1700,7 @@ def initialize_model_parallel(
     # Don't create EP group for dense models.
     if config.model_config is None or config.model_config.is_moe:
         group_ranks = (
-            all_ranks.transpose(1, 2)
+            all_ranks
             .reshape(
                 -1,
                 data_parallel_size
