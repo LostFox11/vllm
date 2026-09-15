@@ -8,6 +8,15 @@ import pytest
 from vllm.distributed.utils import get_pp_indices
 
 
+@pytest.mark.parametrize("num_layers", [1, 4, 78])
+def test_unsharded_model_ignores_target_partition(monkeypatch, num_layers):
+    monkeypatch.setenv("VLLM_PP_LAYER_PARTITION", "42,36")
+    assert get_pp_indices(num_layers, 0, 1) == (0, num_layers)
+    # The same environment still partitions the target normally.
+    assert get_pp_indices(78, 0, 2) == (0, 42)
+    assert get_pp_indices(78, 1, 2) == (42, 78)
+
+
 def test_custom_layer_partition(monkeypatch: pytest.MonkeyPatch):
     with monkeypatch.context() as m:
 

@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import MagicMock, Mock
 
 import pytest
 import torch
@@ -10,6 +11,51 @@ from vllm.distributed.eplb.eplb_state import (
     _commit_eplb_maps,
     _commit_eplb_maps_for_layer,
 )
+from vllm.model_executor.models.deepseek_v2 import (
+    DeepseekV2DecoderLayer,
+    DeepseekV2ForCausalLM,
+    DeepseekV2MoE,
+    GlmMoeDsaForCausalLM,
+)
+from vllm.model_executor.models.utils import PPMissingLayer
+
+
+@pytest.mark.parametrize("model_cls", [DeepseekV2ForCausalLM, GlmMoeDsaForCausalLM])
+@pytest.mark.parametrize(
+    "start,end,expected",
+    [(0, 78, 75), (0, 39, 36), (39, 78, 39), (0, 42, 39), (42, 78, 36), (0, 3, 0)],
+)
+def test_deepseek_eplb_counts_only_local_moe_layers(model_cls, start, end, expected):
+    model = model_cls.__new__(model_cls)
+    torch.nn.Module.__init__(model)
+    model.config = SimpleNamespace(n_group=1)
+    model.num_moe_layers = 75
+    layers = []
+    expected_experts = []
+    for idx in range(78):
+        if not start <= idx < end:
+            layers.append(PPMissingLayer())
+            continue
+        mlp = Mock(spec=DeepseekV2MoE) if idx >= 3 else torch.nn.Identity()
+        layers.append(Mock(spec=DeepseekV2DecoderLayer, mlp=mlp))
+        if idx >= 3:
+            mlp.experts = object()
+            for attr in (
+                "n_logical_experts",
+                "n_physical_experts",
+                "n_local_physical_experts",
+                "n_routed_experts",
+                "n_shared_experts",
+                "n_redundant_experts",
+            ):
+                setattr(mlp, attr, 0)
+            expected_experts.append(mlp.experts)
+    model.model = SimpleNamespace(layers=layers)
+
+    model.set_moe_parameters()
+
+    assert model.num_moe_layers == expected
+    assert model.moe_layers == expected_experts
 
 
 def _make_model_state(
