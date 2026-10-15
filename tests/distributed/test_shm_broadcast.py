@@ -9,6 +9,7 @@ import random
 import threading
 import time
 import weakref
+from array import array
 from types import SimpleNamespace
 from unittest import mock
 
@@ -33,6 +34,7 @@ from vllm.distributed.device_communicators.shm_tensor_arena import (
 from vllm.distributed.utils import StatelessProcessGroup
 from vllm.utils.network_utils import get_open_port
 from vllm.utils.system_utils import update_environment_variables
+from vllm.v1.core.sched.output import NewRequestData
 
 
 def get_arrays(n: int, seed: int = 0) -> list[np.ndarray]:
@@ -477,6 +479,58 @@ def test_broadcast_retains_values_after_ring_reuse(kind, nbytes, overflow, num_o
         if array.flags.writeable:
             received[0] = 42
             assert array[0] == 17
+    finally:
+        reader.shutdown()
+        writer.shutdown()
+
+
+@pytest.mark.parametrize(
+    ("n_local_reader", "max_chunk_bytes"),
+    [(1, 2 * 1024 * 1024), (1, 4096), (0, 4096)],
+    ids=["shm", "shm_overflow", "tcp"],
+)
+def test_packed_prompt_broadcast_retains_full_prefix(n_local_reader, max_chunk_bytes):
+    writer = MessageQueue(
+        n_reader=1,
+        n_local_reader=n_local_reader,
+        max_chunk_bytes=max_chunk_bytes,
+        max_chunks=1,
+        connect_ip="127.0.0.1",
+    )
+    reader = MessageQueue.create_from_handle(writer.export_handle(), rank=0)
+    writer.wait_until_ready()
+    reader.wait_until_ready()
+    received = []
+    try:
+        for index in range(3):
+            prompt = [index, 154879, -1] * 100_000
+            data = NewRequestData(
+                req_id=str(index),
+                prompt_token_ids=prompt,
+                mm_features=[],
+                sampling_params=None,
+                pooling_params=None,
+                block_ids=([1],),
+                num_computed_tokens=len(prompt) - 1,
+                lora_request=None,
+                pack_prompt_token_ids=True,
+            )
+            writer.enqueue(data, timeout=5)
+            received.append(reader.dequeue(timeout=5))
+            assert isinstance(received[-1].prompt_token_ids, array)
+            assert received[-1].prompt_token_ids.tolist() == prompt
+            assert received[-1].num_computed_tokens == len(prompt) - 1
+            # Earlier requests must survive reuse of the single ring slot.
+            for previous_index, previous in enumerate(received):
+                assert (
+                    previous.prompt_token_ids.tolist()
+                    == [
+                        previous_index,
+                        154879,
+                        -1,
+                    ]
+                    * 100_000
+                )
     finally:
         reader.shutdown()
         writer.shutdown()

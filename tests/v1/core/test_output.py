@@ -1,5 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import pickle
+from array import array
+
+import pytest
 import torch
 
 from vllm.multimodal.inputs import (
@@ -10,7 +14,10 @@ from vllm.multimodal.inputs import (
     PlaceholderRange,
 )
 from vllm.multimodal.utils import strip_covered_mm_data
+from vllm.pooling_params import PoolingParams
+from vllm.sampling_params import SamplingParams
 from vllm.v1.core.sched.output import NewRequestData
+from vllm.v1.request import Request
 
 
 def _create_new_requests_data(prompt_embeds: torch.Tensor | None) -> NewRequestData:
@@ -25,6 +32,85 @@ def _create_new_requests_data(prompt_embeds: torch.Tensor | None) -> NewRequestD
         lora_request=None,
         prompt_embeds=prompt_embeds,
     )
+
+
+@pytest.mark.parametrize("protocol", [4, pickle.HIGHEST_PROTOCOL])
+def test_packed_prompt_roundtrip_preserves_full_prefix(protocol: int) -> None:
+    prompt = [-1, 0, 154879, 2**31 - 1] * 1024
+    data = _create_new_requests_data(None)
+    data.prompt_token_ids = prompt
+    data.num_computed_tokens = len(prompt) - 256
+    data.pack_prompt_token_ids = True
+
+    received = pickle.loads(pickle.dumps(data, protocol=protocol))
+
+    assert isinstance(received.prompt_token_ids, array)
+    assert received.prompt_token_ids.itemsize == 4
+    assert received.prompt_token_ids.tolist() == prompt
+    assert received.prompt_len == len(prompt)
+    assert received.num_computed_tokens == len(prompt) - 256
+    assert not received.pack_prompt_token_ids
+    assert data.prompt_token_ids is prompt and data.pack_prompt_token_ids
+
+    # Mutating sender or receiver must not affect the other side.
+    prompt[0] = 7
+    assert received.prompt_token_ids[0] == -1
+    received.prompt_token_ids[1] = 9
+    assert prompt[1] == 0
+
+
+@pytest.mark.parametrize("invalid", [-(2**31) - 1, 2**31])
+def test_packed_prompt_rejects_overflow(invalid: int) -> None:
+    data = _create_new_requests_data(None)
+    data.prompt_token_ids = [invalid] + [0] * 4095
+    data.pack_prompt_token_ids = True
+    with pytest.raises(OverflowError):
+        pickle.dumps(data, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+@pytest.mark.parametrize("prompt", [None, [], [1, 2], list(range(4095))])
+def test_short_prompt_keeps_list_representation(prompt: list[int] | None) -> None:
+    data = _create_new_requests_data(None)
+    data.prompt_token_ids = prompt
+    data.pack_prompt_token_ids = True
+    received = pickle.loads(pickle.dumps(data, protocol=pickle.HIGHEST_PROTOCOL))
+    assert received.prompt_token_ids == prompt
+    assert received.prompt_token_ids is None or isinstance(
+        received.prompt_token_ids, list
+    )
+
+
+def test_unpacked_long_prompt_keeps_list_representation() -> None:
+    data = _create_new_requests_data(None)
+    data.prompt_token_ids = list(range(4096))
+    received = pickle.loads(pickle.dumps(data, protocol=pickle.HIGHEST_PROTOCOL))
+    assert isinstance(received.prompt_token_ids, list)
+    assert received.prompt_token_ids == data.prompt_token_ids
+
+
+@pytest.mark.parametrize(
+    "feature", ["text", "mrope", "multimodal", "embeds", "pooling"]
+)
+def test_prompt_packing_feature_guards(feature: str) -> None:
+    prompt = list(range(4096))
+    req = Request(
+        "packing-test",
+        prompt,
+        None if feature == "pooling" else SamplingParams(max_tokens=1),
+        PoolingParams(task="embed") if feature == "pooling" else None,
+        prompt_embeds=torch.zeros(4096, 1) if feature == "embeds" else None,
+        mm_features=[_mm_feature(0, 1)] if feature == "multimodal" else None,
+    )
+    data = NewRequestData.from_request(
+        req,
+        ([1],),
+        uses_mrope=feature == "mrope",
+        pack_prompt_token_ids=True,
+    )
+    received = pickle.loads(pickle.dumps(data, protocol=pickle.HIGHEST_PROTOCOL))
+    assert isinstance(received.prompt_token_ids, array if feature == "text" else list)
+    assert list(received.prompt_token_ids) == prompt
+    assert req.prompt_token_ids is prompt
 
 
 def test_repr_with_none() -> None:

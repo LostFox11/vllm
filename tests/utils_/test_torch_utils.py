@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+from array import array
+
 import numpy as np
 import pytest
 import torch
@@ -217,6 +219,17 @@ def test_async_tensor_h2d_staging(device):
     assert torch.equal(
         async_tensor_h2d([1, 2, 3], device=device, dtype=torch.int32),
         torch.tensor([1, 2, 3], dtype=torch.int32, device=device),
+    )
+
+
+@pytest.mark.parametrize(
+    "device", ["cpu", "cuda"] if torch.cuda.is_available() else ["cpu"]
+)
+def test_async_tensor_h2d_packed_prompt_preserves_integer_values(device):
+    prompt = [-1, 154879, 2**31 - 1]
+    assert torch.equal(
+        async_tensor_h2d(array("i", prompt), device=device),
+        torch.tensor(prompt, dtype=torch.int64, device=device),
     )
 
 

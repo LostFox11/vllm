@@ -6,7 +6,7 @@ import os
 import random
 import sys
 import threading
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Sequence
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import numpy as np
@@ -714,12 +714,12 @@ def create_kv_caches_with_random(
 
 
 def async_tensor_h2d(
-    data: list | np.ndarray | torch.Tensor,
+    data: Sequence | np.ndarray | torch.Tensor,
     device: str | torch.device | None = None,
     dtype: torch.dtype | None = None,
     out: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Copy list/numpy array/tensor async from host to device."""
+    """Copy a sequence/numpy array/tensor async from host to device."""
     if dtype is None and out is not None:
         dtype = out.dtype
     if isinstance(data, np.ndarray):

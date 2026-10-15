@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import inspect
+from array import array
 from collections.abc import Sequence
 
 import numpy as np
@@ -570,6 +571,43 @@ def test_placeholder_spec_token_ids_written_verbatim():
     # (GPUModelRunner._preprocess).
     assert input_batch.spec_token_ids[0] == [13, -1, -1]
     assert input_batch.token_ids_cpu[0, 3:6].tolist() == [13, -1, -1]
+
+
+@pytest.mark.parametrize("representation", [list, lambda ids: array("i", ids)])
+def test_input_batch_packed_prompt_and_row_reuse(representation, monkeypatch):
+    from vllm.v1.worker import gpu_input_batch
+
+    monkeypatch.setattr(gpu_input_batch, "PIN_MEMORY", False)
+    input_batch = InputBatch(
+        max_num_reqs=1,
+        max_model_len=8192,
+        max_num_batched_tokens=256,
+        device=torch.device("cpu"),
+        vocab_size=154880,
+        block_sizes=[256],
+        max_num_blocks_per_req=[32],
+    )
+    for index, length in enumerate((4096, 8191, 4097)):
+        prompt = [(i + index) % 154880 for i in range(length)]
+        req = CachedRequestState(
+            req_id=str(index),
+            prompt_token_ids=representation(prompt),
+            mm_features=[],
+            sampling_params=SamplingParams(temperature=0),
+            generator=None,
+            block_ids=([1],),
+            num_computed_tokens=length - 256,
+            output_token_ids=[154879],
+        )
+        input_batch.add_request(req)
+        np.testing.assert_array_equal(input_batch.token_ids_cpu[0, :length], prompt)
+        assert input_batch.token_ids_cpu[0, length] == 154879
+        assert input_batch.num_computed_tokens_cpu[0] == length - 256
+        assert req.get_token_id(length - 1) == prompt[-1]
+        input_batch.refresh_metadata()
+        input_batch.remove_request(req.req_id)
+        input_batch.condense()
+        input_batch.refresh_metadata()
 
 
 @pytest.mark.parametrize(

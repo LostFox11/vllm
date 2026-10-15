@@ -1433,6 +1433,10 @@ class Scheduler(SchedulerInterface):
                     req,
                     req_to_new_blocks[req.request_id].get_block_ids(),
                     uses_mrope=self.model_uses_mrope,
+                    pack_prompt_token_ids=(
+                        self.use_pp
+                        and not self.vllm_config.model_config.logits_processors
+                    ),
                 )
                 for req in scheduled_new_reqs
             ]

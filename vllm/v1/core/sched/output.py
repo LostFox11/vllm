@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-from collections.abc import Callable
+from array import array
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
 from typing import TYPE_CHECKING
@@ -37,10 +38,13 @@ else:
     Request = object
 
 
+_MIN_PACKED_PROMPT_TOKENS = 4096
+
+
 @dataclass
 class NewRequestData:
     req_id: str
-    prompt_token_ids: list[int] | None
+    prompt_token_ids: Sequence[int] | None
     mm_features: list[MultiModalFeatureSpec]
     sampling_params: SamplingParams | None
     pooling_params: PoolingParams | None
@@ -54,6 +58,24 @@ class NewRequestData:
     prefill_token_ids: list[int] | None = None
     # DeepSeek-V4.1 only: SWA bounded replay; see Request.replay_start.
     replay_start: int = 0
+    # MRV1 PP workers can copy a packed buffer into InputBatch directly.
+    pack_prompt_token_ids: bool = field(default=False, repr=False)
+
+    def __getstate__(self) -> dict:
+        state = self.__dict__.copy()
+        state["pack_prompt_token_ids"] = False
+        ids = self.prompt_token_ids
+        if (
+            self.pack_prompt_token_ids
+            and isinstance(ids, list)
+            and len(ids) >= _MIN_PACKED_PROMPT_TOKENS
+        ):
+            packed = array("i")
+            if packed.itemsize == 4:
+                # fromlist checks bounds instead of silently narrowing integers.
+                packed.fromlist(ids)
+                state["prompt_token_ids"] = packed
+        return state
 
     @classmethod
     def from_request(
@@ -62,6 +84,7 @@ class NewRequestData:
         block_ids: tuple[list[int], ...],
         prefill_token_ids: list[int] | None = None,
         uses_mrope: bool = False,
+        pack_prompt_token_ids: bool = False,
     ) -> "NewRequestData":
         return cls(
             req_id=request.request_id,
@@ -80,6 +103,13 @@ class NewRequestData:
             prompt_is_token_ids=request.prompt_is_token_ids,
             prefill_token_ids=prefill_token_ids,
             replay_start=request.replay_start,
+            pack_prompt_token_ids=(
+                pack_prompt_token_ids
+                and not uses_mrope
+                and not request.mm_features
+                and request.prompt_embeds is None
+                and request.pooling_params is None
+            ),
         )
 
     @property

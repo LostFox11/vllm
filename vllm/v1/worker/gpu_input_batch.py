@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 # Datastructures defining a GPU input batch
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import cast
 
@@ -34,7 +35,7 @@ from vllm.v1.worker.block_table import MultiGroupBlockTable, SlotMappingMode
 @dataclass
 class CachedRequestState:
     req_id: str
-    prompt_token_ids: list[int] | None
+    prompt_token_ids: Sequence[int] | None
     mm_features: list[MultiModalFeatureSpec]
     sampling_params: SamplingParams | None
     generator: torch.Generator | None

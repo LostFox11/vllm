@@ -1632,6 +1632,8 @@ class GPUModelRunner(
 
         if req_state.prompt_token_ids is not None:
             input_tokens = req_state.prompt_token_ids
+            if not isinstance(input_tokens, list):
+                input_tokens = list(input_tokens)
         elif req_state.prompt_embeds is not None:
             # For embeddings-only inputs, get_mrope_input_positions only
             # needs the sequence length when mm_features is empty (which is

@@ -401,6 +401,43 @@ def test_cached_request_data_resumed_all_token_ids_mrv1_only():
     assert cached.all_token_ids == {}
 
 
+@pytest.mark.parametrize(
+    ("pp_size", "use_v2", "custom_processor", "expect_packed"),
+    [
+        (1, False, False, False),
+        (2, False, False, True),
+        (2, True, False, False),
+        (2, False, True, False),
+    ],
+)
+def test_mrv1_pp_prompt_transport_selection(
+    pp_size, use_v2, custom_processor, expect_packed, monkeypatch
+):
+    from array import array
+
+    monkeypatch.setenv("VLLM_ALLOW_LONG_MAX_MODEL_LEN", "1")
+    scheduler = create_scheduler(
+        max_model_len=8192,
+        max_num_batched_tokens=4096,
+        pipeline_parallel_size=pp_size,
+        use_v2_model_runner=use_v2,
+    )
+    if custom_processor:
+        scheduler.vllm_config.model_config.logits_processors = [
+            "example.CustomProcessor"
+        ]
+    (req,) = create_requests(num_requests=1, num_tokens=4096)
+    scheduler.add_request(req)
+
+    output = scheduler.schedule()
+    (data,) = output.scheduled_new_reqs
+    state = data.__getstate__()
+
+    assert isinstance(state["prompt_token_ids"], array) == expect_packed
+    assert list(state["prompt_token_ids"]) == req.prompt_token_ids
+    assert isinstance(req.prompt_token_ids, list)
+
+
 def test_schedule_partial_requests():
     """Test scheduling behavior with partial requests.
 

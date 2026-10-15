@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import uuid
+from collections.abc import Sequence
 
 import torch
 
@@ -13,7 +14,7 @@ def random_uuid() -> str:
 
 
 def length_from_prompt_token_ids_or_embeds(
-    prompt_token_ids: list[int] | torch.Tensor | None,
+    prompt_token_ids: Sequence[int] | torch.Tensor | None,
     prompt_embeds: torch.Tensor | None,
 ) -> int:
     """Calculate the request length (in number of tokens) give either
